@@ -2,17 +2,39 @@ import { onAuthReady } from "/src/authentication.js";
 import { db } from "./firebaseConfig.js";
 import { doc, onSnapshot } from "firebase/firestore";
 import { collection, getDocs, addDoc, serverTimestamp } from "firebase/firestore";
+import { getDoc, setDoc, arrayUnion, arrayRemove } from "firebase/firestore";
+
+//These are the module level variaable that everyone can access.
+let currentUser = null;   // who is logged in
+let favourites = [];      // the hike IDs they've favourited
 
 function showName() {
-    // Pass a CALLBACK function to run when Firebase finishes checking login status
-    onAuthReady(function(user) {  // Firebase passes the user object (or null)
-        if (user) {
-            // User is logged in
-            const name = user.displayName || user.email;  // Use email if name is missing
-            document.getElementById("name-goes-here").textContent = name + "!";
-        } else {
-            // User is NOT logged in
-            location.href = "index.html";  // Redirect to login page
+
+    // Get the DOM element where the user's name will be displayed
+    // Example: <h1 id="name-goes-here"></h1>
+    const nameElement = document.getElementById("name-goes-here");
+
+    // Wait until Firebase Auth finishes checking the user's auth state
+    onAuthReady(async (user) => {
+
+        // If no user is logged in, redirect to the login page
+        if (!user) {
+            location.href = "index.html";
+            return; // Stop execution
+        }
+
+        // Get the user's Firestore document from the "users" collection
+        // Document ID is the user's unique UID
+        const userDoc = await getDoc(doc(db, "users", user.uid));
+
+        // Determine which name to display:
+        const name = userDoc.exists()            // 1️⃣ Use Firestore name if document exists
+            ? userDoc.data().name                // 2️⃣ Otherwise fallback to Firebase displayName
+            : user.displayName || user.email;    // 3️⃣ Otherwise fallback to email
+
+       // If the DOM element exists, update its text using a template literal to add "!"
+        if (nameElement) {
+            nameElement.textContent = `${name}!`;
         }
     });
 }
@@ -82,7 +104,7 @@ async function displayCardsDynamically() {
             newcard.querySelector('.card-image').src = `./images/${hike.code}.jpg`;
 
             newcard.querySelector(".read-more").href = `eachHike.html?docID=${doc.id}`;
-
+            setupHeart(newcard, doc.id);    // activate the heart on this card
             // Attach the new card to the container
             document.getElementById("hikes-go-here").appendChild(newcard);
         });
@@ -115,5 +137,82 @@ async function seedHikes() {
     }
 }
 
-   // Call the function to display cards when the page loads
-   displayCardsDynamically();
+// Call the function to display cards when the page loads
+// displayCardsDynamically();
+// Runs once Firebase knows if someone is logged in
+
+// Runs once Firebase knows if someone is logged in
+onAuthReady(async function (user) {
+  if (!user) {
+    location.href = "index.html";                              // Not logged in → back to start
+  } else {
+    currentUser = user;                                        // 1. Remember who's logged in
+    const userDoc = await getDoc(doc(db, "users", user.uid));  // 2. Get their user doc
+
+    // 3. Load user's favourites, or use an empty array if none exist
+    favourites = userDoc.data()?.favourites || [];   // uses "optional chaining" (?.)
+
+    // Beginner version of the line above:
+    // if (userDoc.exists() && userDoc.data().favourites) {
+    //   favourites = userDoc.data().favourites;
+    // } else {
+    //   favourites = [];
+    // }
+
+    displayCardsDynamically();                                 // 4. Draw the cards
+  }
+});
+
+// ------------------------------------------------------------
+// setupHeart(card, hikeID)
+// Gets ONE card's heart ready:
+//   - on page load: fills the heart if this hike is already a favourite
+//   - connects the click to toggleFavourite()
+// card   = the card we just built from the template
+// hikeID = this hike's document ID (doc.id)
+// ------------------------------------------------------------
+function setupHeart(card, hikeID) {
+
+    // [FRONT END] Find the heart icon inside this card
+    const heart = card.querySelector(".fav-btn");
+
+    // [FRONT END] Already a favourite? Fill the heart.
+    //             (favourites was read from Firestore in Step 2.3)
+    if (favourites.includes(hikeID)) {
+        heart.classList.replace("bi-heart", "bi-heart-fill");
+    }
+
+    // Connect it: "heart, when you are clicked, toggle this hike"
+    heart.addEventListener("click", function () {
+        toggleFavourite(heart, hikeID);
+    });
+}
+// ------------------------------------------------------------
+// toggleFavourite(heart, hikeID)
+// Runs on every click: adds or removes the hike from favourites
+// heart  = the heart icon that was clicked
+// hikeID = which hike it belongs to
+// ------------------------------------------------------------
+async function toggleFavourite(heart, hikeID) {
+
+    // [BACK END] The address of the logged-in user's document in Firestore
+    const userRef = doc(db, "users", currentUser.uid);
+
+    // [FRONT END] Is the heart filled right now?
+    if (heart.classList.contains("bi-heart-fill")) {
+
+        // Filled → REMOVE from favourites
+        // [BACK END] Remove this hike's ID from the user's favourites array
+        await setDoc(userRef, { favourites: arrayRemove(hikeID) }, { merge: true });
+        // [FRONT END] Show the empty heart
+        heart.classList.replace("bi-heart-fill", "bi-heart");
+
+    } else {
+
+        // Empty → ADD to favourites
+        // [BACK END] Add this hike's ID to the user's favourites array
+        await setDoc(userRef, { favourites: arrayUnion(hikeID) }, { merge: true });
+        // [FRONT END] Show the filled heart
+        heart.classList.replace("bi-heart", "bi-heart-fill");
+    }
+}
